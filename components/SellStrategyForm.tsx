@@ -66,14 +66,14 @@ export default function SellStrategyForm({ coin, onSave, onCancel }: SellStrateg
           <>
             <div style={{ marginBottom: '1rem' }}>
               <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>
-                목표 가격 (USD)
+                목표 가격 (KRW)
               </label>
               <input
                 type="number"
                 className="input"
                 value={targetPrice}
                 onChange={(e) => setTargetPrice(e.target.value)}
-                placeholder={`현재가: $${coin.price.toLocaleString()}`}
+                placeholder={`현재가: ${coin.price.toLocaleString()}원`}
                 step="0.01"
               />
             </div>
@@ -97,14 +97,14 @@ export default function SellStrategyForm({ coin, onSave, onCancel }: SellStrateg
           <>
             <div style={{ marginBottom: '1rem' }}>
               <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>
-                손절 가격 (USD)
+                손절 가격 (KRW)
               </label>
               <input
                 type="number"
                 className="input"
                 value={stopLossPrice}
                 onChange={(e) => setStopLossPrice(e.target.value)}
-                placeholder={`현재가: $${coin.price.toLocaleString()}`}
+                placeholder={`현재가: ${coin.price.toLocaleString()}원`}
                 step="0.01"
               />
             </div>

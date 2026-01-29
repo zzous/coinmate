@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AISignal } from '@/types';
+import { getUpbitCandles, getUpbitTickers, extractSymbol } from '@/lib/upbit';
+import { generateTechnicalSummary } from '@/lib/technical-indicators';
+import { generateAISignalWithOpenAI } from '@/lib/openai';
+import { generateMockAISignal } from '@/lib/ai-signal-fallback';
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,45 +16,108 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // TODO: 실제 AI 모델 연동 (OpenAI, 자체 모델 등)
-    // 현재는 모의 AI 신호를 생성합니다
-    const signal = await generateMockAISignal(coinSymbol, currentPrice, priceHistory);
+    // 하이브리드 접근: 기술적 지표 + AI 분석
+    const signal = await generateHybridAISignal(
+      coinSymbol,
+      currentPrice,
+      priceHistory
+    );
 
     return NextResponse.json(signal);
   } catch (error) {
     console.error('AI 신호 생성 오류:', error);
-    return NextResponse.json(
-      { error: 'AI 신호 생성 중 오류가 발생했습니다' },
-      { status: 500 }
-    );
+    
+    // 에러 발생 시 모의 데이터로 폴백
+    try {
+      const { coinSymbol, currentPrice, priceHistory } = await request.json();
+      const fallbackSignal = await generateMockAISignal(
+        coinSymbol,
+        currentPrice,
+        priceHistory
+      );
+      return NextResponse.json(fallbackSignal);
+    } catch (fallbackError) {
+      return NextResponse.json(
+        { error: 'AI 신호 생성 중 오류가 발생했습니다', details: error instanceof Error ? error.message : 'Unknown error' },
+        { status: 500 }
+      );
+    }
   }
 }
 
-async function generateMockAISignal(
+/**
+ * 하이브리드 AI 신호 생성: 기술적 지표 + OpenAI 분석
+ */
+async function generateHybridAISignal(
   coinSymbol: string,
   currentPrice?: number,
   priceHistory?: number[]
 ): Promise<AISignal> {
-  // 실제 구현 시에는 AI 모델을 사용하여 분석해야 합니다
-  // 예: 기술적 지표 분석, 시장 감정 분석, 패턴 인식 등
+  // 1. 가격 데이터 수집
+  const market = `KRW-${coinSymbol}`;
+  let prices: number[] = priceHistory || [];
+  let price = currentPrice;
+  let priceChange24h = 0;
+  let volume24h = 0;
 
-  // 모의 신호 생성
-  const signals: AISignal['signal'][] = ['buy', 'sell', 'hold'];
-  const randomSignal = signals[Math.floor(Math.random() * signals.length)];
-  const confidence = 0.65 + Math.random() * 0.3; // 0.65 ~ 0.95
+  try {
+    // Upbit에서 최신 시세 정보 가져오기
+    const tickers = await getUpbitTickers([market]);
+    if (tickers.length > 0) {
+      const ticker = tickers[0];
+      price = ticker.trade_price;
+      priceChange24h = ticker.signed_change_rate * 100;
+      volume24h = ticker.acc_trade_price_24h;
+    }
 
-  const reasoningMap = {
-    sell: `현재 가격이 저항선 근처에 위치하고 있으며, 거래량 감소와 함께 상승 모멘텀이 약화되고 있습니다. RSI 지표가 과매수 구간에 진입했으며, 단기 조정 가능성이 높아 보입니다.`,
-    buy: `지지선 근처에서 반등 신호가 보이며, 거래량이 증가하고 있습니다. 기술적 지표들이 긍정적인 신호를 보이고 있어 상승 가능성이 있습니다.`,
-    hold: `현재 시장이 횡보 중이며, 명확한 방향성이 보이지 않습니다. 추가 시장 데이터를 관찰한 후 결정하는 것이 좋겠습니다.`,
-  };
+    // 가격 히스토리가 없으면 Upbit에서 가져오기
+    if (prices.length === 0) {
+      const candles = await getUpbitCandles(market, 200);
+      if (candles.length > 0) {
+        prices = candles;
+        // 현재가를 맨 앞에 추가
+        if (price) {
+          prices.unshift(price);
+        }
+      }
+    } else if (price) {
+      // 제공된 히스토리에 현재가 추가
+      prices.unshift(price);
+    }
+  } catch (error) {
+    console.warn('Upbit 데이터 조회 실패, 제공된 데이터 사용:', error);
+  }
 
-  return {
-    coinSymbol,
-    signal: randomSignal,
-    confidence,
-    reasoning: reasoningMap[randomSignal],
-    timestamp: new Date().toISOString(),
-  };
+  // 가격 데이터가 충분하지 않으면 모의 데이터 사용
+  if (!price || prices.length < 20) {
+    console.warn('가격 데이터 부족, 모의 신호 생성');
+    return await generateMockAISignal(coinSymbol, price, prices);
+  }
+
+  // 2. 기술적 지표 계산
+  const technicalSummary = generateTechnicalSummary(price, prices);
+
+  // 3. OpenAI로 AI 분석 (API 키가 있는 경우)
+  try {
+    const aiSignal = await generateAISignalWithOpenAI(
+      coinSymbol,
+      price,
+      technicalSummary,
+      priceChange24h,
+      volume24h
+    );
+    
+    // API 키가 없거나 null이 반환된 경우 폴백
+    if (aiSignal) {
+      return aiSignal;
+    }
+    
+    // API 키가 없으면 기술적 지표 기반 신호 생성
+    return await generateMockAISignal(coinSymbol, price, prices);
+  } catch (error) {
+    // OpenAI API 호출 오류 발생 시 기술적 지표 기반 모의 신호 생성
+    console.warn('OpenAI 분석 실패, 기술적 지표 기반 신호 생성:', error);
+    return await generateMockAISignal(coinSymbol, price, prices);
+  }
 }
 
