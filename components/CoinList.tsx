@@ -8,10 +8,11 @@ interface CoinListProps {
 }
 
 export default function CoinList({ coins, onSelectCoin }: CoinListProps) {
+
   return (
     <div className="card">
       <h2 style={{ fontSize: '1.5rem', fontWeight: '600', marginBottom: '1rem' }}>
-        📊 List of Coins
+        List of Coins
       </h2>
       <div style={{ display: 'grid', gap: '0.75rem' }}>
         {coins.map((coin) => (

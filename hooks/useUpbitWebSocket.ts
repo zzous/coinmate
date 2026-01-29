@@ -58,8 +58,8 @@ export function useUpbitWebSocket() {
         // 먼저 REST API로 초기 데이터 로드
         await loadCoinsFromAPI();
 
-        // 상위 20개 마켓 가져오기
-        const markets = await getTopMarkets(20);
+        // 상위 10개 마켓 가져오기 (BTC, ETH 포함)
+        const markets = await getTopMarkets(0, 10);
 
         if (!isMountedRef.current) {
           return;

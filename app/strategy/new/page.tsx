@@ -32,17 +32,22 @@ export default function NewStrategyPage() {
     };
   }, []);
 
-  // URL 쿼리 파라미터에서 코인 선택
+  // URL 쿼리 파라미터에서 코인 선택 (coin 파라미터가 변경될 때만 실행)
+  const coinSymbolFromUrl = searchParams.get('coin');
+  const prevCoinSymbolRef = useRef<string | null>(null);
+  
   useEffect(() => {
-    const coinSymbol = searchParams.get('coin');
-    if (coinSymbol && coins.length > 0) {
-      const coin = coins.find((c) => c.symbol === coinSymbol);
+    // coin 파라미터가 변경되었을 때만 실행
+    if (coinSymbolFromUrl && coinSymbolFromUrl !== prevCoinSymbolRef.current && coins.length > 0) {
+      const coin = coins.find((c) => c.symbol === coinSymbolFromUrl);
       if (coin) {
+        prevCoinSymbolRef.current = coinSymbolFromUrl;
         setSelectedCoin(coin);
         fetchAISignal(coin);
       }
     }
-  }, [searchParams, coins]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coinSymbolFromUrl]); // coinSymbolFromUrl이 변경될 때만 실행
 
   useEffect(() => {
     if (!authLoading && !user) {

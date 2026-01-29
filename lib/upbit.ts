@@ -17,22 +17,39 @@ export const DEFAULT_UPBIT_MARKETS = [
   'KRW-ATOM',  // Cosmos
 ] as const;
 
-// 동적으로 가져온 마켓 리스트 (캐시)
-let cachedMarkets: string[] | null = null;
+// 동적으로 가져온 전체 마켓 리스트 (캐시)
+let cachedAllMarkets: string[] | null = null;
 let cacheTimestamp: number = 0;
 const CACHE_DURATION = 60 * 60 * 1000; // 1시간 캐시
 
 /**
- * 업비트에서 거래량 기준 상위 N개 KRW 마켓을 가져옵니다
- * @param limit 가져올 마켓 개수 (기본값: 20)
+ * 업비트에서 거래량 기준 상위 KRW 마켓을 가져옵니다 (페이징 지원)
+ * BTC와 ETH는 항상 포함됩니다.
+ * @param offset 시작 인덱스 (기본값: 0)
+ * @param limit 가져올 마켓 개수 (기본값: 10)
  * @returns 마켓 코드 배열
  */
-export async function getTopMarkets(limit: number = 20): Promise<string[]> {
-  // 캐시가 유효하면 캐시 반환
+export async function getTopMarkets(offset: number = 0, limit: number = 20): Promise<string[]> {
   const now = Date.now();
-  if (cachedMarkets && (now - cacheTimestamp) < CACHE_DURATION) {
-    return cachedMarkets;
+  
+  // 캐시가 유효하지 않으면 전체 마켓 리스트 다시 로드
+  if (!cachedAllMarkets || (now - cacheTimestamp) >= CACHE_DURATION) {
+    await loadAllMarkets();
   }
+  
+  // 캐시된 전체 마켓 리스트에서 페이징된 결과 반환
+  if (cachedAllMarkets) {
+    return cachedAllMarkets.slice(offset, offset + limit);
+  }
+  
+  // 캐시가 없으면 기본 마켓 반환
+  return DEFAULT_UPBIT_MARKETS.slice(offset, offset + limit) as unknown as string[];
+}
+
+/**
+ * 전체 마켓 리스트를 로드하여 캐시에 저장합니다
+ */
+async function loadAllMarkets(): Promise<void> {
 
   try {
     // 1단계: 모든 마켓 목록 가져오기
@@ -51,40 +68,76 @@ export async function getTopMarkets(limit: number = 20): Promise<string[]> {
 
     if (krwMarkets.length === 0) {
       console.warn('KRW 마켓을 찾을 수 없음, 기본 마켓 사용');
-      return DEFAULT_UPBIT_MARKETS as unknown as string[];
+      cachedAllMarkets = DEFAULT_UPBIT_MARKETS as unknown as string[];
+      cacheTimestamp = Date.now();
+      return;
     }
 
     // 2단계: 모든 KRW 마켓의 시세 정보 가져오기 (거래량 기준 정렬)
-    // 업비트 API는 최대 200개까지 한 번에 요청 가능
-    const marketsToFetch = krwMarkets.slice(0, 200);
-    const tickersResponse = await axios.get<UpbitTicker[]>(
-      `${UPBIT_API_BASE_URL}/ticker`,
-      {
-        params: {
-          markets: marketsToFetch.join(','),
-        },
-        timeout: 10000,
-      }
-    );
+    // 업비트 API는 최대 200개까지 한 번에 요청 가능하므로 배치로 나눠서 요청
+    const BATCH_SIZE = 200;
+    const allTickers: UpbitTicker[] = [];
+
+    for (let i = 0; i < krwMarkets.length; i += BATCH_SIZE) {
+      const batch = krwMarkets.slice(i, i + BATCH_SIZE);
+      
+      try {
+        const tickersResponse = await axios.get<UpbitTicker[]>(
+          `${UPBIT_API_BASE_URL}/ticker`,
+          {
+            params: {
+              markets: batch.join(','),
+            },
+            timeout: 10000,
+          }
+        );
+        
+        if (Array.isArray(tickersResponse.data)) {
+          allTickers.push(...tickersResponse.data);
+        }
+        
+        // Rate limit 방지를 위해 배치 간 지연
+        if (i + BATCH_SIZE < krwMarkets.length) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        } catch {
+          // 개별 배치 실패는 무시하고 계속 진행
+        }
+    }
 
     // 24시간 누적 거래대금(acc_trade_price_24h) 기준으로 정렬
-    const sortedTickers = tickersResponse.data
+    const sortedTickers = allTickers
       .filter((ticker) => ticker.acc_trade_price_24h > 0) // 거래량이 있는 것만
       .sort((a, b) => b.acc_trade_price_24h - a.acc_trade_price_24h)
-      .slice(0, limit)
       .map((ticker) => ticker.market);
 
-    // 캐시 저장
-    cachedMarkets = sortedTickers;
-    cacheTimestamp = now;
+    // BTC와 ETH는 항상 포함 (필수 마켓)
+    const requiredMarkets = ['KRW-BTC', 'KRW-ETH'];
+    const finalMarkets: string[] = [];
+    const addedMarkets = new Set<string>();
+    
+    // 먼저 필수 마켓 추가 (BTC, ETH)
+    for (const required of requiredMarkets) {
+      finalMarkets.push(required);
+      addedMarkets.add(required);
+    }
+    
+    // 나머지 마켓 추가 (필수 마켓 제외, 전체 마켓)
+    for (const market of sortedTickers) {
+      if (!addedMarkets.has(market)) {
+        finalMarkets.push(market);
+        addedMarkets.add(market);
+      }
+    }
 
-    // 로그 제거 (너무 많이 출력됨)
-    // console.log(`[Upbit] 상위 ${limit}개 마켓 로드 완료:`, sortedTickers);
-    return sortedTickers;
+    // 전체 마켓 리스트를 캐시에 저장
+    cachedAllMarkets = finalMarkets;
+    cacheTimestamp = Date.now();
   } catch (error) {
-    console.warn('[Upbit] 상위 마켓 조회 실패, 기본 마켓 사용:', error);
-    // 에러 발생 시 기본 마켓 반환
-    return DEFAULT_UPBIT_MARKETS as unknown as string[];
+    console.warn('[Upbit] 전체 마켓 조회 실패, 기본 마켓 사용:', error);
+    // 에러 발생 시 기본 마켓을 캐시에 저장
+    cachedAllMarkets = DEFAULT_UPBIT_MARKETS as unknown as string[];
+    cacheTimestamp = Date.now();
   }
 }
 
@@ -128,9 +181,9 @@ export interface UpbitTicker {
 export async function getUpbitTickers(
   markets?: string[]
 ): Promise<UpbitTicker[]> {
-  // markets가 제공되지 않으면 상위 20개 마켓 자동 조회
+  // markets가 제공되지 않으면 상위 10개 마켓 자동 조회 (BTC, ETH 포함)
   if (!markets || markets.length === 0) {
-    markets = await getTopMarkets(20);
+    markets = await getTopMarkets(0, 20);
   }
   try {
     // Upbit API는 여러 마켓을 한번에 요청할 수 있지만, 일부 마켓이 없으면 전체가 실패할 수 있음
